@@ -1,0 +1,27 @@
+<!-- templates/logs.html -->
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Guard Logs</title>
+</head>
+<body>
+    <h1>Guard Logs</h1>
+    <table border="1">
+        <tr>
+            <th>Guard Name</th>
+            <th>Gate</th>
+            <th>Action</th>
+            <th>Timestamp</th>
+        </tr>
+        {% for log in logs %}
+        <tr>
+            <td>{{ log.user.name }}</td>
+            <td>{{ log.gate }}</td>
+            <td>{{ log.action }}</td>
+            <td>{{ log.timestamp }}</td>
+        </tr>
+        {% endfor %}
+    </table>
+    <a href="{{ url_for('admin_dashboard') }}">Back to Dashboard</a>
+</body>
+</html>

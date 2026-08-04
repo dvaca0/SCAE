@@ -1,0 +1,48 @@
+<!-- templates/manage_guards.html -->
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Gestionar Guardias</title>
+    <style>
+        body { font-family: Arial, sans-serif; }
+        h1, h2 { color: #333; }
+        form { margin: 20px 0; }
+        input { margin: 5px 0; padding: 5px; }
+        input[type="submit"] { background-color: #4CAF50; color: white; border: none; padding: 10px; }
+        ul { list-style-type: none; }
+        li { margin: 10px 0; }
+        a { text-decoration: none; color: #4CAF50; }
+    </style>
+</head>
+<body>
+    <h1>Gestionar Guardias</h1>
+    <h2>Agregar Nuevo Guardia</h2>
+    <form method="post">
+        <input type="hidden" name="action" value="add">
+        Nombre: <input type="text" name="name"><br>
+        Usuario: <input type="text" name="username"><br>
+        Contraseña: <input type="password" name="password"><br>
+        Puerta Asignada: <input type="text" name="gate_assigned"><br>
+        <input type="submit" value="Agregar Guardia">
+    </form>
+    <h2>Lista de Guardias</h2>
+    <ul>
+    {% for guard in guards %}
+        <li>{{ guard.name }} - Puerta: {{ guard.gate_assigned }}
+            <form method="post" style="display:inline;">
+                <input type="hidden" name="action" value="remove">
+                <input type="hidden" name="guard_id" value="{{ guard.id }}">
+                <input type="submit" value="Eliminar">
+            </form>
+            <form method="post" style="display:inline;">
+                <input type="hidden" name="action" value="update">
+                <input type="hidden" name="guard_id" value="{{ guard.id }}">
+                Nueva Puerta: <input type="text" name="gate_assigned">
+                <input type="submit" value="Actualizar">
+            </form>
+        </li>
+    {% endfor %}
+    </ul>
+    <a href="{{ url_for('admin_dashboard') }}">Volver al Panel de Administración</a>
+</body>
+</html>
