@@ -1,134 +1,162 @@
-# SCAE — Vehicular Access Control System
+# SCAE — Sistema de Control de Acceso Vehicular
 
-[![Python](https://img.shields.io/badge/Python-3.11-blue)](https://www.python.org/)
-[![Flask](https://img.shields.io/badge/Flask-3.x-black)](https://flask.palletsprojects.com/)
-[![YOLOv5](https://img.shields.io/badge/Detection-YOLOv5%20(Ultralytics)-purple)](https://github.com/ultralytics/ultralytics)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+Plataforma institucional de control de acceso vehicular: reconocimiento de placas,
+verificación de permisos, decisión auditable y registro de cada entrada y salida en
+los accesos de la Universidad de Colima.
 
-A computer-vision access-control system for campus/facility vehicle gates. A guard-facing
-web dashboard captures a vehicle image, the backend detects the vehicle and reads its license
-plate, cross-references it against a roster of authorized people, and logs every allow/deny
-decision — with role-based dashboards for guards and administrators and email alerts on
-infractions.
+> **Entorno de demostración.** Los datos que se cargan con `make seed` están marcados
+> como `demo` en la base y en la interfaz. **No corresponden a registros reales de la
+> Universidad de Colima.**
 
-Built as a systems project spanning computer vision, a REST-ish Flask backend, and a
-separate Streamlit client — three moving parts that have to agree on a contract.
+---
 
-## Features
+## Qué resuelve
 
-- **Vehicle detection** — YOLOv5 (via the `ultralytics` package) locates vehicles in an
-  uploaded frame.
-- **License-plate recognition (LPR)** — EasyOCR reads the plate out of the detected
-  vehicle's bounding box.
-- **Access decisioning** — recognized plates are matched against a `Person` roster; guards
-  can allow, deny, or flag an infraction, all logged with a timestamp and the guard on duty.
-- **Role-based dashboards** — separate guard and admin views (Flask-rendered pages) plus a
-  Streamlit client that talks to the same backend over its JSON API.
-- **Admin console** — add/remove guards, reassign gates, and review the full access-log and
-  guard sign-in/sign-out history.
-- **Email notifications** — SMTP alert sent when an infraction is issued.
-
-## Architecture
-
-```mermaid
-flowchart LR
-    subgraph Guard Station
-        CAM[Camera / uploaded image]
-        UI[Streamlit dashboard]
-    end
-
-    subgraph Backend [Flask app — app.py]
-        API[REST endpoints]
-        DET[detection.py<br/>YOLOv5 vehicle detection]
-        LPR[lpr.py<br/>EasyOCR plate recognition]
-        AUTH[Session-based auth<br/>role: admin / guard]
-        NOTIFY[notifications.py<br/>SMTP alerts]
-    end
-
-    DB[(SQLite<br/>Users · People · AccessLog · GuardLog)]
-    ADMIN[Admin dashboard<br/>Jinja templates]
-
-    CAM --> UI --> API
-    API --> DET --> LPR --> API
-    API <--> DB
-    API --> NOTIFY
-    AUTH --- API
-    ADMIN --> API
-```
-
-**Request flow for a gate check:** the guard uploads a frame → `detection.py` runs YOLOv5 to
-find vehicle bounding boxes → each crop goes to `lpr.py` for OCR → a recognized plate is looked
-up in the `Person` table → the guard allows, denies, or flags the visit, which writes an
-`AccessLog` row and (for infractions) triggers an email via `notifications.py`.
-
-## Tech stack
-
-| Layer | Technology |
-|---|---|
-| Detection | YOLOv5 (Ultralytics) |
-| OCR | EasyOCR |
-| Backend | Flask, Flask-SQLAlchemy |
-| Guard/admin client | Streamlit |
-| Database | SQLite (swappable via `DATABASE_URL`) |
-| Auth | Server-side sessions, password hashing via Werkzeug |
-| Notifications | SMTP |
-
-## Project structure
+Un vehículo llega a una caseta. En segundos hay que decidir si pasa, y esa decisión
+tiene que quedar registrada con su justificación. SCAE cubre esa cadena completa:
 
 ```
-scae-vehicular-access-control/
-├── app.py              # Flask app: routes, auth, seed data
-├── db_models.py         # SQLAlchemy models: User, Person, AccessLog, GuardLog
-├── detection.py          # YOLOv5 vehicle detection
-├── lpr.py                # EasyOCR license-plate recognition
-├── camera.py             # Video-file frame generator (for a live camera feed)
-├── notifications.py      # SMTP infraction alerts
-├── dashboard/
-│   └── dashboard.py      # Streamlit guard/admin client
-├── templates/             # Flask-rendered pages (login, admin, guard, logs)
-├── requirements.txt
-└── .env.example
+VEHÍCULO LLEGA → CAPTURA → DETECCIÓN → LPR → NORMALIZACIÓN
+    → CONSULTA DE AUTORIZACIÓN → DECISIÓN
+    → ABRIR / DENEGAR / REVISIÓN MANUAL → REGISTRO → AUDITORÍA
 ```
 
-## Quick start
+Cada eslabón es un módulo separado, de modo que la cámara, el modelo de visión, la
+política de acceso y la barrera física puedan sustituirse de forma independiente.
+
+## Arquitectura
+
+```
+frontend/                 React 18 + TypeScript + Vite + Tailwind 4
+  ├── Consola de caseta   Interfaz operativa para el guardia
+  └── Consola de gestión  Panel, padrón, permisos, infraestructura, auditoría
+        │  HTTP + cookie de sesión httpOnly + CSRF
+        ▼
+backend/app/
+  ├── api/                Rutas FastAPI y control de acceso por rol
+  ├── services/
+  │     ├── decision.py   Motor de decisión (función pura, sin E/S)
+  │     ├── access.py     Orquestación del evento de acceso
+  │     ├── audit.py      Registro append-only
+  │     └── notifications.py
+  ├── recognition/
+  │     ├── pipeline.py   Detección y OCR tras protocolos intercambiables
+  │     └── plate.py      Normalización de placas mexicanas
+  ├── hardware/drivers.py Cámaras y barreras tras una interfaz por driver
+  └── models/             Dominio SQLAlchemy 2.0 (15 tablas)
+        │
+        ▼
+      SQLite (desarrollo) · PostgreSQL (producción, vía Alembic)
+```
+
+**Separación deliberada:** detección ≠ reconocimiento ≠ identidad ≠ autorización ≠
+decisión ≠ actuación física ≠ registro. El prototipo original mezclaba las siete
+dentro de un mismo endpoint.
+
+## Requisitos
+
+- macOS o Linux · Python 3.11 · Node 20+
+- La primera ejecución del pipeline descarga ~100 MB de pesos YOLO y los modelos de
+  EasyOCR. Con `SCAE_RECOGNITION_BACKEND=stub` la plataforma arranca sin ellos.
+
+## Puesta en marcha
 
 ```bash
-git clone https://github.com/TheBlackDie901/SCAE.git
-cd SCAE
-python -m venv venv && source venv/bin/activate   # Windows: venv\Scripts\activate
-pip install -r requirements.txt
-cp .env.example .env   # fill in FLASK_SECRET_KEY and, if you want email alerts, SMTP_*
+python3.11 -m venv .venv
+./.venv/bin/pip install -r requirements.txt
+cp .env.example .env          # genera SCAE_SECRET_KEY
+cd frontend && npm install && cd ..
 
-# Terminal 1 — backend (creates & seeds the SQLite DB on first run)
-python app.py
-
-# Terminal 2 — guard/admin dashboard
-streamlit run dashboard/dashboard.py
+make migrate                  # crea el esquema
+make seed                     # datos de demostración
 ```
 
-The first run of `detection.py` downloads the YOLOv5 weights automatically (~90 MB) via
-`ultralytics`; an internet connection is needed once.
+Después, en dos terminales:
 
-**Demo accounts** (seeded automatically): `admin` / `admin123`, `guard1` / `pass1`, `guard2` / `pass2`.
-Change these before any real deployment.
+```bash
+make api    # http://localhost:8000  ·  documentación en /api/docs
+make web    # http://localhost:5173
+```
 
-## Known limitations
+Para detener ambos: `make stop`.
 
-- Infraction emails are sent to a placeholder address (`person@example.com`) — the `Person`
-  model has no email field yet, so this needs a schema addition to be wired up for real use.
-- LPR uses a length-based heuristic (5–10 characters) to pick the most plate-like OCR result
-  rather than a trained plate-detection model — works well enough for demo images, less
-  robust against noisy backgrounds.
-- No automated tests yet (see Roadmap).
+### Cuentas de demostración
 
-## Roadmap
+| Usuario | Contraseña | Rol | Ve |
+|---|---|---|---|
+| `admin` | `SCAEadmin2026!` | Administrador | Todo, incluidos usuarios |
+| `supervisor` | `SCAEsuper2026!` | Supervisor | Operación y padrón, sin usuarios |
+| `guardia1` | `SCAEguard2026!` | Guardia | Sólo la consola de su carril |
+| `auditor` | `SCAEaudit2026!` | Auditor | Sólo lectura, incluida la auditoría |
 
-- [ ] Add an `email` field to `Person` and wire real infraction notifications
-- [ ] Swap the OCR length heuristic for a dedicated plate-detector + OCR two-stage pipeline
-- [ ] Add pytest coverage for the access-decision logic
-- [ ] Containerize (Dockerfile + docker-compose for backend + dashboard together)
-- [ ] Live camera feed via `camera.py` instead of manual image upload
+Todas exigen cambio de contraseña en el primer acceso. **Cámbialas antes de cualquier
+despliegue real.**
 
-## License
+## Roles
 
-MIT — see [LICENSE](LICENSE).
+| Rol | Alcance |
+|---|---|
+| **Administrador** | Configuración, infraestructura, usuarios, todo el padrón |
+| **Supervisor** | Operación, padrón, permisos, incidencias — sin gestión de usuarios |
+| **Guardia** | Consola operativa de su carril asignado; no accede a la administración |
+| **Auditor** | Lectura completa, incluida la traza de auditoría; sin escritura |
+
+## Motor de decisión
+
+Las reglas se evalúan en orden fijo, de la más restrictiva a la menos:
+
+1. Sin placa legible → **revisión manual**
+2. Placa en lista de control → **denegar** (prevalece sobre cualquier permiso)
+3. Confianza de lectura bajo el umbral → **revisión manual**
+4. Vehículo no registrado → **revisión manual** *(no es una denegación: las casetas
+   reciben visitantes y proveedores constantemente)*
+5. Sin permiso vigente → **denegar**
+6. Permiso suspendido o revocado → **denegar**
+7. Permiso fuera de vigencia → **denegar**
+8. Permiso que no cubre ese acceso → **denegar**
+9. En caso contrario → **permitir**
+
+`services/decision.py` es una función pura sin efectos: se puede probar, reutilizar
+desde una cámara automática y auditar sin levantar la aplicación.
+
+## Hardware
+
+Ningún componente habla directamente con un dispositivo. Todo pasa por
+`hardware/drivers.py`, y cada cámara o controlador declara su `driver` y su `config`
+en la base de datos.
+
+| Driver | Tipo | Estado |
+|---|---|---|
+| `mock` | Cámara / barrera | **Implementado** — simula, y lo marca como simulado |
+| `file` | Cámara | **Implementado** — reproduce imagen o vídeo local |
+| `rtsp` | Cámara | Declarado, sin implementar |
+| `unifi_protect` | Cámara | Declarado, sin implementar |
+| `http_relay` | Barrera | Declarado, sin implementar |
+| `gpio` | Barrera | Declarado, sin implementar |
+
+Añadir UniFi Protect o un relé en Raspberry Pi es escribir una clase y registrarla:
+no exige cambios de esquema, de API ni del motor de decisión. La pantalla **Estado del
+sistema** indica en todo momento qué está operativo y qué está simulado.
+
+## Comandos
+
+```bash
+make          # ayuda
+make api      # API en :8000
+make web      # interfaz en :5173
+make seed     # datos demo
+make test     # suite de pruebas
+make migrate  # migraciones
+make lint     # tipos del frontend
+make stop     # detiene todo
+make legacy   # prototipo v1 (Flask, :5001)
+```
+
+## Prototipo v1
+
+`app.py`, `dashboard/dashboard.py` y `templates/` son la versión original y se
+conservan intactos mientras se valida la v2. No comparten base de datos con la v2.
+
+## Licencia
+
+MIT — ver [LICENSE](LICENSE).
