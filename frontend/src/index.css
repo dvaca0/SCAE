@@ -1,0 +1,175 @@
+@import "tailwindcss";
+
+/* ==========================================================================
+   SCAE design system
+   Palette derived from the Universidad de Colima graphic identity manual:
+     verde   PANTONE 349  rgb(0,107,63)     #006B3F
+     olivo   PANTONE 5767 rgb(153,153,51)   #999933
+     dorado  PANTONE 131  rgb(198,147,10)   #C6930A
+     gris    PANTONE 423  rgb(181,178,170)  #B5B2AA
+   Official typeface is Univers, which is not web-licensed; Inter is used as
+   a neo-grotesque substitute with the same rational, highly legible voice.
+   Plates are set in a monospace so characters align and cannot be misread.
+   ========================================================================== */
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+
+  /* Institutional green, scaled for interface use */
+  --color-uc-50:  #eaf5ef;
+  --color-uc-100: #cbe7d7;
+  --color-uc-200: #9ad2b4;
+  --color-uc-300: #62b98d;
+  --color-uc-400: #2f9d68;
+  --color-uc-500: #0f8450;
+  --color-uc-600: #006b3f;  /* PANTONE 349 — the institutional green */
+  --color-uc-700: #005733;
+  --color-uc-800: #044327;
+  --color-uc-900: #06331f;
+  --color-uc-950: #021d12;
+
+  /* Dorado PANTONE 131 */
+  --color-gold-100: #fbeecd;
+  --color-gold-300: #eecb72;
+  --color-gold-500: #c6930a;
+  --color-gold-600: #a87b06;
+  --color-gold-700: #855f05;
+
+  /* Olivo PANTONE 5767 */
+  --color-olive-400: #b3b356;
+  --color-olive-500: #999933;
+  --color-olive-600: #7a7a29;
+
+  /* Warm institutional neutral, tuned to PANTONE 423 */
+  --color-stone-25:  #fafaf9;
+  --color-stone-150: #ebeae7;
+}
+
+:root {
+  --surface:        #f6f7f5;
+  --surface-raised: #ffffff;
+  --surface-sunken: #eeefec;
+  --border:         #dedfd9;
+  --border-strong:  #c6c8c0;
+  --text:           #1b1f1d;
+  --text-muted:     #5c625e;
+  --text-subtle:    #868c88;
+
+  --allow:      #0f8450;
+  --allow-bg:   #e7f4ed;
+  --deny:       #b3261e;
+  --deny-bg:    #fbeae9;
+  --review:     #a87b06;
+  --review-bg:  #fdf3dc;
+  --info:       #1f5f8b;
+  --info-bg:    #e8f1f8;
+
+  /* Solid action buttons carry white labels, so they need a dark enough
+     fill in BOTH themes — the --allow/--deny tokens above are tuned for
+     text on tint and are far too light for that. */
+  --btn-allow: #0f7a4a;
+  --btn-allow-hover: #0b6339;
+  --btn-deny: #b3261e;
+  --btn-deny-hover: #931c16;
+
+  --shadow-card: 0 1px 2px rgb(16 24 20 / 0.05), 0 1px 3px rgb(16 24 20 / 0.04);
+  --shadow-pop: 0 10px 30px -12px rgb(16 24 20 / 0.28);
+  color-scheme: light;
+}
+
+.dark {
+  --surface:        #0e1311;
+  --surface-raised: #161d1a;
+  --surface-sunken: #0a0f0d;
+  --border:         #26302c;
+  --border-strong:  #38443f;
+  --text:           #e8ece9;
+  --text-muted:     #9aa5a0;
+  --text-subtle:    #6e7a75;
+
+  --allow:      #4ade80;
+  --allow-bg:   #0c2a1c;
+  --deny:       #f87171;
+  --deny-bg:    #2c1210;
+  --review:     #eecb72;
+  --review-bg:  #2c2310;
+  --info:       #7dd3fc;
+  --info-bg:    #0d2230;
+
+  --btn-allow: #15803d;
+  --btn-allow-hover: #166534;
+  --btn-deny: #b91c1c;
+  --btn-deny-hover: #991b1b;
+
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 0.4);
+  --shadow-pop: 0 16px 40px -12px rgb(0 0 0 / 0.7);
+  color-scheme: dark;
+}
+
+* { border-color: var(--border); }
+
+/* min-height, not height: the shell must grow with the page. With a fixed
+   100% height the body stops at one viewport and long pages scroll out of
+   the painted background. */
+html, body, #root { min-height: 100%; }
+
+body {
+  background: var(--surface);
+  color: var(--text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  font-feature-settings: "cv05", "ss01";
+}
+
+/* Focus ring: visible, institutional, never removed. */
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-uc-500);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* --- Primitives ---------------------------------------------------------- */
+@utility surface-card {
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-card);
+}
+
+@utility plate {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  font-variant-ligatures: none;
+}
+
+@utility num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Thin, unobtrusive scrollbars — this is a dense operations UI. */
+@supports (scrollbar-width: thin) {
+  * { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+}
+
+/* Respect users who ask for less motion. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@keyframes scae-fade-up {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: none; }
+}
+@utility animate-in-up { animation: scae-fade-up 0.18s ease-out both; }
+
+@keyframes scae-pulse-ring {
+  0%   { box-shadow: 0 0 0 0 rgb(15 132 80 / 0.45); }
+  70%  { box-shadow: 0 0 0 10px rgb(15 132 80 / 0); }
+  100% { box-shadow: 0 0 0 0 rgb(15 132 80 / 0); }
+}
+@utility pulse-ring { animation: scae-pulse-ring 1.8s ease-out infinite; }
