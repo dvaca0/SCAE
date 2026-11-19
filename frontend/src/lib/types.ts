@@ -84,6 +84,17 @@ export interface AccessEventDetail extends AccessEvent {
   plate_candidates: PlateCandidate[]
 }
 
+export interface SimilarVehicle {
+  id: number
+  plate: string
+  plate_display: string
+  distance: number
+  owner_name: string | null
+  owner_type: string | null
+  brand: string | null
+  color: string | null
+}
+
 export interface CaptureResponse {
   event: AccessEventDetail
   matched_person?: {
@@ -110,6 +121,8 @@ export interface CaptureResponse {
     valid_until?: string | null
   } | null
   recognition_backend: string
+  /** Placas del padrón parecidas, cuando no hubo coincidencia exacta. */
+  similar_vehicles?: SimilarVehicle[]
 }
 
 export interface TrendPoint {

@@ -25,8 +25,8 @@ from app.models import (
 from app.recognition.pipeline import get_pipeline
 from app.schemas.common import Message, Page
 from app.schemas.operations import (
-    AccessEventDetail, AccessEventOut, CaptureResponse, ManualDecisionIn,
-    ManualEntryIn, ShiftOut,
+    AccessEventDetail, AccessEventOut, CaptureResponse, CredentialIntakeIn,
+    IntakeResponse, ManualDecisionIn, ManualEntryIn, ShiftOut, VisitorIntakeIn,
 )
 from app.services import access, audit
 
@@ -77,6 +77,25 @@ def _capture_context(db, event: AccessEvent) -> CaptureResponse:
                 "permit_code": auth_row.permit_code,
                 "valid_until": auth_row.valid_until.isoformat() if auth_row.valid_until else None,
             } if auth_row else None
+        ),
+        # Solo cuando NO hubo coincidencia exacta: si el vehiculo esta
+        # identificado, sugerir parecidos solo confundiria.
+        similar_vehicles=(
+            [
+                {
+                    "id": v.id,
+                    "plate": v.plate,
+                    "plate_display": v.plate_display,
+                    "distance": d,
+                    "owner_name": v.owner.full_name if v.owner else None,
+                    "owner_type": v.owner.person_type.value if v.owner else None,
+                    "brand": v.brand,
+                    "color": v.color,
+                }
+                for v, d in access.similar_vehicles(db, event.plate_normalized)
+            ]
+            if vehicle is None and event.plate_normalized
+            else []
         ),
         recognition_backend=settings.recognition_backend,
     )
@@ -195,6 +214,58 @@ def get_event(event_id: int, db: DbSession, user: AnyRole):
     return event_detail(db, event)
 
 
+@router.get("/{event_id}/context", response_model=CaptureResponse)
+def event_context(event_id: int, db: DbSession, user: Operators):
+    """El evento con su identidad, vehiculo y permiso resueltos.
+
+    PARCHE LOCAL (Raspberry Pi 5) - ver /opt/scae/PATCHES.md
+
+    `/events/{id}` y `/events/pending` devuelven el evento, pero no a QUIEN
+    corresponde la placa. La consola necesita lo segundo para pintar el panel de
+    decision, y antes se lo inventaba: construia un `CaptureResponse` con
+    `matched_person`, `matched_vehicle` y `active_authorization` vacios. El
+    efecto era que al abrir un pendiente la identidad salia siempre en blanco
+    y un vehiculo YA REGISTRADO se ofrecia como desconocido, invitando al
+    guardia a darlo de alta por segunda vez.
+
+    Esta ruta reutiliza exactamente el mismo contexto que devuelve una captura,
+    asi que un evento abierto desde la cola se ve igual que recien capturado.
+    """
+    event = db.get(AccessEvent, event_id)
+    if not event:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Evento no encontrado.")
+    return _capture_context(db, event)
+
+
+@router.get("/lane/{lane_id}/latest", response_model=CaptureResponse)
+def latest_lane_event(lane_id: int, db: DbSession, user: Operators):
+    """El ultimo evento del carril, con su contexto.
+
+    PARCHE LOCAL (Raspberry Pi 5) - ver /opt/scae/PATCHES.md
+
+    Es lo que la consola consulta para enterarse de que ha pasado un coche sin
+    que el guardia tenga que hacer clic en nada. Se sirve con el contexto ya
+    resuelto para que una sola peticion baste: a 3 segundos de intervalo, pedir
+    primero el evento y luego su identidad doblaria el trafico para nada.
+    """
+    lane = db.get(Lane, lane_id)
+    if lane is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "El carril no existe.")
+    if user.role is Role.GUARD and user.default_lane_id and lane.id != user.default_lane_id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN,
+                            "Solo puedes consultar el carril que tienes asignado.")
+    event = db.scalar(
+        select(AccessEvent)
+        .where(AccessEvent.lane_id == lane_id)
+        .order_by(AccessEvent.occurred_at.desc(), AccessEvent.id.desc())
+        .limit(1)
+    )
+    if event is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND,
+                            "Todavia no hay eventos en este carril.")
+    return _capture_context(db, event)
+
+
 @router.post("/{event_id}/decision", response_model=AccessEventDetail)
 def resolve_event(event_id: int, payload: ManualDecisionIn, request: Request,
                   db: DbSession, user: Operators):
@@ -226,6 +297,98 @@ def resolve_event(event_id: int, payload: ManualDecisionIn, request: Request,
     db.commit()
     db.refresh(event)
     return event_detail(db, event)
+
+
+# --- Alta desde la caseta (PARCHE LOCAL, Raspberry Pi 5) ------------------
+# El motor de decision manda los vehiculos desconocidos a revision manual. Estas
+# dos rutas son lo que el guardia hace a continuacion: darle paso como visitante
+# o registrarlo de forma permanente. Ambas resuelven el MISMO evento y accionan
+# la barrera por el camino normal; ver app/services/intake.py.
+def _intake_event(db, event_id: int, user) -> tuple[AccessEvent, Lane | None]:
+    """Carga el evento y comprueba que este guardia puede tocarlo."""
+    event = db.get(AccessEvent, event_id)
+    if not event:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Evento no encontrado.")
+    if user.role is Role.GUARD and user.default_lane_id and event.lane_id != user.default_lane_id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN,
+                            "Solo puedes resolver eventos de tu carril.")
+    if event.resolved_at is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            "Este evento ya fue resuelto.")
+    lane = db.get(Lane, event.lane_id) if event.lane_id else None
+    return event, lane
+
+
+@router.post("/{event_id}/register-visitor", response_model=IntakeResponse)
+def register_visitor_route(
+    event_id: int, payload: VisitorIntakeIn, request: Request,
+    db: DbSession, user: Operators,
+):
+    """Pase de visitante: alta temporal y paso autorizado."""
+    from app.services import intake
+
+    event, lane = _intake_event(db, event_id, user)
+    try:
+        result = intake.register_visitor(
+            db, event=event, actor=user, lane=lane,
+            full_name=payload.full_name, visit_reason=payload.visit_reason,
+            hours=payload.hours, plate_override=payload.plate,
+            brand=payload.brand, model=payload.model, color=payload.color,
+        )
+    except intake.IntakeError as exc:
+        db.rollback()
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+    audit.record(
+        db, action="intake.visitor", actor=user, entity_type="access_event",
+        entity_id=event.id,
+        summary=f"Visitante {result['person_name']} - {result['plate']} "
+                f"(pase {result['permit_code']})",
+        payload={"permit_code": result["permit_code"],
+                 "valid_until": result["valid_until"],
+                 "person_id": result["person_id"]},
+        request=request,
+    )
+    db.commit()
+    db.refresh(event)
+    return IntakeResponse(event=event_detail(db, event), registration=result)
+
+
+@router.post("/{event_id}/register-credential", response_model=IntakeResponse)
+def register_credential_route(
+    event_id: int, payload: CredentialIntakeIn, request: Request,
+    db: DbSession, user: Operators,
+):
+    """Alta permanente con los datos de la credencial universitaria."""
+    from app.services import intake
+
+    event, lane = _intake_event(db, event_id, user)
+    try:
+        result = intake.register_credential(
+            db, event=event, actor=user, lane=lane,
+            full_name=payload.full_name,
+            institutional_id=payload.institutional_id,
+            person_type=payload.person_type, plate_override=payload.plate,
+            brand=payload.brand, model=payload.model, color=payload.color,
+        )
+    except intake.IntakeError as exc:
+        db.rollback()
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+    audit.record(
+        db, action="intake.credential", actor=user, entity_type="access_event",
+        entity_id=event.id,
+        summary=f"Alta permanente {result['person_name']} "
+                f"({result['institutional_id']}) - {result['plate']}",
+        payload={"permit_code": result["permit_code"],
+                 "institutional_id": result["institutional_id"],
+                 "person_type": result["person_type"],
+                 "person_id": result["person_id"]},
+        request=request,
+    )
+    db.commit()
+    db.refresh(event)
+    return IntakeResponse(event=event_detail(db, event), registration=result)
 
 
 @router.get("/{event_id}/evidence")

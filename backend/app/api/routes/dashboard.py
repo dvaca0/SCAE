@@ -139,6 +139,40 @@ def system_health(db: DbSession, user: AnyRole):
             detail="Backend stub: no se ejecutan modelos de visión.",
         ))
         recognition_ready = False
+    elif settings.recognition_backend == "onnx":
+        # PARCHE LOCAL (Raspberry Pi 5) - ver /opt/scae/PATCHES.md
+        # Sin esto la pantalla de estado decía "degraded · dependencias de
+        # visión no disponibles" aunque el reconocimiento ONNX funcione, porque
+        # sólo sabía buscar easyocr y ultralytics. El guardia mira esta
+        # pantalla para saber de qué puede fiarse, así que tiene que ser exacta.
+        try:
+            import onnxruntime  # noqa: F401
+
+            from app.recognition.onnx_backend import MODELS_DIR
+
+            det = MODELS_DIR / settings.detector_model
+            ocr = MODELS_DIR / settings.ocr_model
+            missing = [f.name for f in (det, ocr) if not f.is_file()]
+            if missing:
+                recognition_ready = False
+                components.append(SystemComponent(
+                    key="recognition", label="Reconocimiento LPR", status="degraded",
+                    detail=f"Modelos ONNX ausentes: {', '.join(missing)}",
+                ))
+            else:
+                recognition_ready = True
+                components.append(SystemComponent(
+                    key="recognition", label="Reconocimiento LPR", status="operational",
+                    detail=(
+                        f"ONNX Runtime · detector {det.stem} + OCR {ocr.stem} · CPU"
+                    ),
+                ))
+        except ImportError:
+            recognition_ready = False
+            components.append(SystemComponent(
+                key="recognition", label="Reconocimiento LPR", status="degraded",
+                detail="onnxruntime no disponible.",
+            ))
     else:
         try:
             import easyocr  # noqa: F401

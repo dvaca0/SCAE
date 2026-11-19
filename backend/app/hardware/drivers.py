@@ -218,6 +218,67 @@ class GpioBarrierDriver:
         return False, "Driver GPIO declarado pero no implementado."
 
 
+class ServoBarrierDriver:
+    """Servo real sobre una linea GPIO de la Raspberry Pi que aloja el carril.
+
+    PARCHE LOCAL (Raspberry Pi 5) - ver /opt/scae/PATCHES.md
+
+    config: {"chip": 0, "pin": 17, "closed_us": 1000, "open_us": 2000,
+             "freq_hz": 50, "travel_ms": 700, "open_seconds": 6,
+             "min_interval_s": 2}
+
+    **Este driver mueve hardware fisico.** Es el unico que lo hace, y solo actua
+    en la fila de `barrier_controller` que lo declare: los demas carriles siguen
+    en `mock`. La mecanica (pulsar mientras viaja el brazo y despues soltar,
+    para no tener un servo temblando por el jitter del PWM por software) esta
+    explicada en `app/hardware/servo_gate.py`.
+
+    `simulated=False` siempre: si llega aqui, se pulso la linea de verdad. Lo
+    que este driver **no** puede afirmar es que la pluma se haya movido, porque
+    no hay sensor de posicion; por eso el detalle habla de pulsos transmitidos.
+    """
+
+    kind = "servo"
+    requires_config = ("pin",)
+
+    def open(self, config: dict[str, Any], reason: str) -> ActuationResult:
+        from app.core.config import get_settings
+        from app.hardware.servo_gate import (
+            ServoConfig, ServoUnavailable, get_gate,
+        )
+
+        if not get_settings().gate_enabled:
+            # Interruptor de seguridad global. No tocar el GPIO y decirlo.
+            raise DriverNotAvailable(
+                "El servo esta deshabilitado por configuracion "
+                "(SCAE_GATE_ENABLED=false). No se pulso la linea."
+            )
+        cfg = ServoConfig.from_row(config)
+        try:
+            detail = get_gate(cfg).open(reason)
+        except ServoUnavailable as exc:
+            raise DriverNotAvailable(str(exc)) from exc
+        return ActuationResult(True, simulated=False, detail=detail)
+
+    def health(self, config: dict[str, Any]) -> tuple[bool, str]:
+        import os
+
+        from app.core.config import get_settings
+        from app.hardware.servo_gate import ServoConfig
+
+        cfg = ServoConfig.from_row(config)
+        if not get_settings().gate_enabled:
+            return False, f"Servo en GPIO{cfg.pin} deshabilitado (SCAE_GATE_ENABLED=false)."
+        try:
+            import lgpio  # noqa: F401
+        except ImportError:
+            return False, "lgpio no disponible en este interprete."
+        dev = f"/dev/gpiochip{cfg.chip}"
+        if not os.access(dev, os.R_OK | os.W_OK):
+            return False, f"Sin acceso de lectura/escritura a {dev}."
+        return True, f"Servo en GPIO{cfg.pin} ({dev}), listo."
+
+
 CAMERA_DRIVERS: dict[str, CameraDriver] = {
     d.kind: d() for d in (
         MockCameraDriver, FileCameraDriver, RtspCameraDriver, UnifiProtectCameraDriver,
@@ -227,12 +288,14 @@ CAMERA_DRIVERS: dict[str, CameraDriver] = {
 BARRIER_DRIVERS: dict[str, BarrierDriver] = {
     d.kind: d() for d in (
         MockBarrierDriver, HttpRelayBarrierDriver, GpioBarrierDriver,
+        ServoBarrierDriver,
     )
 }
 
 # Which drivers can actually do their job on this deployment today.
 IMPLEMENTED_CAMERA_DRIVERS = {"mock", "file"}
-IMPLEMENTED_BARRIER_DRIVERS = {"mock"}
+# PARCHE LOCAL: el servo del carril del guardia esta implementado y es real.
+IMPLEMENTED_BARRIER_DRIVERS = {"mock", "servo"}
 
 
 def get_camera_driver(kind: str) -> CameraDriver:

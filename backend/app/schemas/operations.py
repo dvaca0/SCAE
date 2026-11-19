@@ -1,6 +1,6 @@
 """Schemas for access events, incidents, shifts and the audit trail."""
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -90,12 +90,88 @@ class ManualEntryIn(BaseModel):
     notes: Optional[str] = Field(default=None, max_length=1000)
 
 
+# --- Alta desde la caseta (PARCHE LOCAL, Raspberry Pi 5) ------------------
+# Las dos salidas que tiene un guardia ante una placa desconocida. Ver
+# app/services/intake.py.
+class VisitorIntakeIn(BaseModel):
+    """Pase temporal: nombre, motivo y cuanto se queda."""
+
+    full_name: str = Field(min_length=3, max_length=160)
+    visit_reason: str = Field(min_length=3, max_length=500)
+    # None = la duracion por defecto de la configuracion.
+    hours: Optional[float] = Field(default=None, gt=0, le=24)
+    # El guardia puede corregir la lectura del OCR antes de registrarla.
+    plate: Optional[str] = Field(default=None, max_length=20)
+    brand: Optional[str] = Field(default=None, max_length=60)
+    model: Optional[str] = Field(default=None, max_length=60)
+    color: Optional[str] = Field(default=None, max_length=40)
+
+
+class CredentialIntakeIn(BaseModel):
+    """Alta permanente con los datos impresos en la credencial."""
+
+    full_name: str = Field(min_length=3, max_length=160)
+    institutional_id: str = Field(min_length=3, max_length=32)
+    # Lo que distingue la credencial. Ver intake.CREDENTIAL_TYPES.
+    person_type: Literal["student", "staff"]
+    plate: Optional[str] = Field(default=None, max_length=20)
+    brand: Optional[str] = Field(default=None, max_length=60)
+    model: Optional[str] = Field(default=None, max_length=60)
+    color: Optional[str] = Field(default=None, max_length=40)
+
+
+# --- Calibracion del servo (PARCHE LOCAL, Raspberry Pi 5) -----------------
+class GateJogIn(BaseModel):
+    """Un movimiento suelto del servo, para localizar sus topes."""
+
+    controller_id: int
+    # 400-2700 us son los topes DUROS: mas alla, cualquier servo de hobby esta
+    # contra su tope mecanico, donde se cala y consume el maximo. El margen util
+    # de cada servo (`pulse_min_us`/`pulse_max_us`) vive en su configuracion y
+    # el driver limita a el; esto solo impide pedir un disparate.
+    pulse_us: int = Field(ge=400, le=2700)
+    hold_ms: int = Field(default=600, ge=50, le=3000)
+
+
+class GateOpenIn(BaseModel):
+    """El guardia abre la pluma a mano."""
+
+    # Sin carril, se usa el que el guardia tenga asignado.
+    lane_id: Optional[int] = None
+    notes: Optional[str] = Field(default=None, max_length=500)
+
+
+class GateCalibrateIn(BaseModel):
+    """Las posiciones definitivas de cerrado y abierto."""
+
+    controller_id: int
+    closed_us: int = Field(ge=400, le=2700)
+    open_us: int = Field(ge=400, le=2700)
+    travel_ms: Optional[int] = Field(default=None, ge=100, le=3000)
+    open_seconds: Optional[float] = Field(default=None, ge=1, le=120)
+    # Ampliar el margen util hace que el servo recorra mas angulo, a cambio de
+    # acercarse a su tope. Se pide explicitamente, nunca por defecto.
+    pulse_min_us: Optional[int] = Field(default=None, ge=400, le=2700)
+    pulse_max_us: Optional[int] = Field(default=None, ge=400, le=2700)
+
+
+class IntakeResponse(BaseModel):
+    """El evento ya resuelto, mas lo que se dio de alta."""
+
+    event: "AccessEventDetail"
+    registration: dict[str, Any]
+
+
 class CaptureResponse(BaseModel):
     event: AccessEventDetail
     # Everything the console needs to render the decision without a second call.
     matched_person: Optional[dict[str, Any]] = None
     matched_vehicle: Optional[dict[str, Any]] = None
     active_authorization: Optional[dict[str, Any]] = None
+    # Placas del padron parecidas a la leida, cuando no hubo coincidencia
+    # exacta. NO es una identificacion: es para que el guardia no de de alta
+    # por quinta vez el mismo coche. Ver access.similar_vehicles().
+    similar_vehicles: list[dict[str, Any]] = []
     recognition_backend: str = ""
 
 

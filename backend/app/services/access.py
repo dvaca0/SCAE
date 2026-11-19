@@ -65,6 +65,66 @@ def resolve_vehicle(db: Session, plate: Optional[str]) -> Optional[Vehicle]:
     return db.scalar(select(Vehicle).where(Vehicle.plate == plate, Vehicle.is_active.is_(True)))
 
 
+def _edit_distance(a: str, b: str, cap: int = 3) -> int:
+    """Distancia de edicion, con corte temprano.
+
+    `cap` evita recorrer la matriz entera cuando ya se sabe que las cadenas
+    estan demasiado lejos: aqui solo interesan las placas que se parecen mucho.
+    """
+    if a == b:
+        return 0
+    if abs(len(a) - len(b)) > cap:
+        return cap + 1
+    previous = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        current = [i]
+        for j, cb in enumerate(b, 1):
+            current.append(min(
+                previous[j] + 1,            # borrar
+                current[j - 1] + 1,         # insertar
+                previous[j - 1] + (ca != cb),  # sustituir
+            ))
+        if min(current) > cap:
+            return cap + 1
+        previous = current
+    return previous[-1]
+
+
+def similar_vehicles(
+    db: Session, plate: Optional[str], *, max_distance: int = 2, limit: int = 4,
+) -> list[tuple["Vehicle", int]]:
+    """Vehiculos del padron cuya placa se parece a `plate`.
+
+    PARCHE LOCAL (Raspberry Pi 5) - ver /opt/scae/PATCHES.md
+
+    Existe por un problema real y medido: con una placa de poco contraste el OCR
+    lee algo distinto cada vez -FTC224A, FTC324A, VTC324A, FTG224A, FTC274A...
+    del MISMO coche- asi que ninguna lectura coincide con lo registrado y el
+    guardia acaba dando de alta a la misma persona una y otra vez. El padron de
+    esta maqueta llego a tener siete vehiculos que eran uno solo.
+
+    **Esto NO concede acceso.** Un parecido no es una identificacion: dos placas
+    reales pueden diferir en un caracter y pertenecer a dos coches distintos.
+    Lo unico que hace es ponerle al guardia delante "esto se parece a lo que ya
+    tienes registrado", para que decida el, y para que no duplique la ficha.
+
+    Se compara sobre la forma normalizada, que es la que se usa para buscar.
+    """
+    if not plate:
+        return []
+    rows = db.scalars(
+        select(Vehicle).where(Vehicle.is_active.is_(True), Vehicle.plate != plate)
+    ).all()
+    scored = []
+    for vehicle in rows:
+        d = _edit_distance(plate, vehicle.plate, cap=max_distance)
+        if d <= max_distance:
+            scored.append((vehicle, d))
+    # Primero las mas parecidas; a igual distancia, la mas reciente.
+    scored.sort(key=lambda pair: (pair[1], -pair[0].id))
+    return scored[:limit]
+
+
 def active_watchlist_entry(db: Session, plate: Optional[str]) -> Optional[WatchlistEntry]:
     if not plate:
         return None
@@ -151,8 +211,20 @@ def process_capture(
     typed_plate: Optional[str] = None,
     camera: Optional[Camera] = None,
     notes: Optional[str] = None,
+    precomputed: Optional[RecognitionResult] = None,
 ) -> AccessEvent:
-    """Run one access attempt end to end and persist it as a single event."""
+    """Run one access attempt end to end and persist it as a single event.
+
+    `precomputed` evita volver a mirar un fotograma que el llamante ya analizo.
+
+    PARCHE LOCAL (Raspberry Pi 5) - ver /opt/scae/PATCHES.md: el vigilante de
+    carril ya ha ejecutado detector y OCR sobre este mismo JPEG para decidir que
+    merecia un evento. Sin esto, `process_capture` los ejecutaba OTRA VEZ sobre
+    la misma imagen: medido en el log, un segundo entero entre el momento en que
+    el vigilante decide avisar y el momento en que el evento existe, con el coche
+    parado delante de la pluma. Es el mismo doble pase que se corrigio dentro del
+    vigilante (parche 18), escondido un nivel mas abajo.
+    """
     now = datetime.now(timezone.utc)
     recognition: Optional[RecognitionResult] = None
     reading: Optional[PlateReading] = None
@@ -163,12 +235,17 @@ def process_capture(
         reading = interpret(typed_plate, ocr_confidence=1.0)
     elif image_bytes:
         evidence_path = store_evidence(image_bytes)
-        frame = decode_image(image_bytes)
-        if frame is None:
-            reading = None
+        if precomputed is not None:
+            # Ya analizado por el llamante: no se vuelve a inferir.
+            recognition = precomputed
+            reading = precomputed.reading
         else:
-            recognition = get_pipeline().process(frame)
-            reading = recognition.reading
+            frame = decode_image(image_bytes)
+            if frame is None:
+                reading = None
+            else:
+                recognition = get_pipeline().process(frame)
+                reading = recognition.reading
 
     plate = reading.normalized if reading and reading.is_valid else None
     confidence = reading.confidence if reading else 0.0
@@ -193,6 +270,42 @@ def process_capture(
             review_threshold=settings.review_confidence_threshold,
         )
     )
+
+    # --- PARCHE LOCAL (Raspberry Pi 5): suelo para mover hierro ----------
+    # El motor de decision manda a revision por debajo de
+    # `review_confidence_threshold` (0.55). Ese umbral decide "necesito que
+    # mire un humano". Pero desde que la barrera es un servo real, un ALLOW
+    # automatico ya no es una fila en una tabla: **mueve hardware**, y una
+    # lectura del 60 % que casualmente coincide con una placa del padron no es
+    # base suficiente para abrirle la puerta a un coche.
+    #
+    # Asi que una captura de camara, sin operador delante, exige ademas
+    # `gate_auto_open_min_confidence` (0.80). Si no llega, el evento baja a
+    # revision manual y lo resuelve el guardia; no se deniega, porque el
+    # vehiculo puede estar perfectamente autorizado y el problema ser la foto.
+    #
+    # No se aplica a entradas manuales ni a subidas: ahi ya hay un humano
+    # respondiendo por la decision.
+    if (
+        source is EventSource.CAMERA
+        and result.decision is Decision.ALLOW
+        and confidence < settings.gate_auto_open_min_confidence
+    ):
+        logger.info(
+            "ALLOW automatico degradado a revision: confianza %.2f < %.2f",
+            confidence, settings.gate_auto_open_min_confidence,
+        )
+        result = DecisionResult(
+            Decision.MANUAL_REVIEW,
+            DecisionReason.LOW_CONFIDENCE,
+            authorization_id=result.authorization_id,
+            person_id=result.person_id,
+            detail=(
+                f"Lectura al {confidence:.0%}, por debajo del "
+                f"{settings.gate_auto_open_min_confidence:.0%} que se exige "
+                "para abrir la barrera sin que intervenga un guardia."
+            ),
+        )
 
     actuation = actuate(lane, result)
     actuation_status, actuation_detail = _actuation_fields(actuation)
@@ -308,6 +421,72 @@ def apply_manual_decision(
         event.actuation_status = status
         event.actuation_detail = detail
 
+    return event
+
+
+def open_barrier_manually(
+    db: Session, *, lane: Optional[Lane], actor: User, notes: Optional[str] = None,
+) -> AccessEvent:
+    """El guardia abre la pluma a mano, sin que haya una placa de por medio.
+
+    PARCHE LOCAL (Raspberry Pi 5) - ver /opt/scae/PATCHES.md
+
+    Hace falta de verdad: alguien a pie, un vehiculo de emergencia, una placa
+    que la camara no ve, una averia. Hasta ahora la unica forma de mover la
+    pluma era resolver un evento, y si no habia evento no habia forma.
+
+    **Deja un evento, no solo una linea de auditoria.** En un sistema de control
+    de acceso, una barrera que se abre sin dejar registro es un agujero: al
+    revisar el dia, la pluma habria subido y no habria constancia de quien ni
+    por que. El evento va sin placa (no la hay), como ALLOW por decision manual
+    y firmado por el guardia, que es exactamente lo que ocurrio.
+
+    No pasa por `actuate()` a proposito: esa funcion respeta
+    `lane.auto_open_on_allow`, pensado para decidir si una APERTURA AUTOMATICA
+    esta permitida. Aqui hay un humano pulsando un boton, asi que esa bandera no
+    deberia poder vetarlo.
+    """
+    now = datetime.now(timezone.utc)
+    actuation: ActuationResult | None = None
+    controller = None
+    if lane is not None:
+        controller = next((c for c in lane.controllers if c.is_active), None)
+
+    if controller is None:
+        actuation = ActuationResult(
+            False, simulated=False,
+            detail="El carril no tiene ningun controlador de barrera activo.",
+        )
+    else:
+        try:
+            driver = get_barrier_driver(controller.driver)
+            actuation = driver.open(controller.config or {}, "apertura manual")
+        except DriverNotAvailable as exc:
+            logger.warning("Apertura manual no disponible en %s: %s", lane.code, exc)
+            actuation = ActuationResult(False, simulated=False, detail=str(exc))
+
+    status_value, detail = _actuation_fields(actuation)
+    event = AccessEvent(
+        occurred_at=now,
+        lane_id=lane.id if lane else None,
+        source=EventSource.MANUAL_ENTRY,
+        plate_read=None, plate_normalized=None, plate_confidence=None,
+        decision=Decision.ALLOW,
+        decision_reason=DecisionReason.MANUAL_OVERRIDE,
+        decided_by_id=actor.id,
+        is_manual=True,
+        resolved_at=now,
+        notes=notes or "Apertura manual de la pluma desde la consola.",
+        actuation_status=status_value,
+        actuation_detail=detail,
+        origin=DataOrigin.REAL,
+    )
+    db.add(event)
+    db.flush()
+    logger.info(
+        "Apertura manual por %s en carril %s: %s",
+        actor.username, lane.code if lane else "sin carril", status_value.value,
+    )
     return event
 
 

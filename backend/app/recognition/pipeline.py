@@ -205,6 +205,18 @@ def get_pipeline() -> RecognitionPipeline:
     settings = get_settings()
     if settings.recognition_backend == "stub":
         return RecognitionPipeline(StubVehicleDetector(), StubPlateReader())
+    if settings.recognition_backend == "onnx":
+        # PARCHE LOCAL (Raspberry Pi 5 / aarch64) - ver /opt/scae/PATCHES.md
+        # Detector de placas YOLOv9-t + OCR CCT, ambos ONNX Runtime. Es la via
+        # viable en esta plataforma: opencv-python no tiene rueda cp313+aarch64
+        # en ninguna version, y easyocr depende de ella y de torch (461 MB).
+        # Se importa aqui, tarde, para no cargar onnxruntime cuando no se usa.
+        from app.recognition.onnx_backend import build_onnx_pipeline
+
+        return build_onnx_pipeline(
+            settings.detector_model, settings.ocr_model,
+            settings.detector_min_confidence,
+        )
     return RecognitionPipeline(
         YoloVehicleDetector(settings.detector_model),
         EasyOcrPlateReader(settings.ocr_languages, settings.ocr_use_gpu),
@@ -212,9 +224,24 @@ def get_pipeline() -> RecognitionPipeline:
 
 
 def decode_image(data: bytes) -> Optional[np.ndarray]:
-    """Decode uploaded bytes into a BGR frame, or None if unreadable."""
-    import cv2
+    """Decode uploaded bytes into a BGR frame, or None if unreadable.
 
-    array = np.frombuffer(data, np.uint8)
-    frame = cv2.imdecode(array, cv2.IMREAD_COLOR)
-    return frame if frame is not None and frame.size else None
+    PARCHE LOCAL (Raspberry Pi 5 / aarch64 / Python 3.13) — ver
+    /opt/scae/PATCHES.md. El original usaba cv2.imdecode, pero opencv-python no
+    publica rueda cp313+aarch64 en ninguna version. Pillow hace el mismo
+    trabajo sin dependencias nativas que haya que compilar. Se devuelve BGR
+    para conservar exactamente el contrato de cv2.imdecode.
+    """
+    import io
+
+    from PIL import Image, UnidentifiedImageError
+
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            image.load()
+            frame = np.asarray(image.convert("RGB"))
+    except (UnidentifiedImageError, OSError, ValueError):
+        return None
+    if frame.size == 0:
+        return None
+    return frame[:, :, ::-1].copy()  # RGB -> BGR
