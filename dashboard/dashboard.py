@@ -11,7 +11,7 @@ def login():
     if st.button("Iniciar Sesión"):
         session = requests.Session()
         response = session.post(
-            'http://localhost:5000/login',
+            'http://localhost:5001/login',
             json={'username': username, 'password': password}
         )
         if response.ok:
@@ -29,7 +29,7 @@ def guard_dashboard():
     st.title("🚧 Panel del Guardia")
     st.write(f"👤 Sesión iniciada como **{st.session_state['username']}**")
     if st.button("🔒 Cerrar Sesión"):
-        st.session_state['session'].get('http://localhost:5000/logout')
+        st.session_state['session'].get('http://localhost:5001/logout')
         st.session_state.clear()
         st.experimental_rerun()
 
@@ -44,7 +44,7 @@ def guard_dashboard():
             # Enviar imagen al backend usando la sesión autenticada
             files = {'image': uploaded_image.getvalue()}
             try:
-                response = st.session_state['session'].post('http://localhost:5000/guard/process_image', files=files)
+                response = st.session_state['session'].post('http://localhost:5001/guard/process_image', files=files)
                 if response.ok:
                     data = response.json()
                     if data and isinstance(data, list):
@@ -67,7 +67,7 @@ def guard_dashboard():
                                 with col1:
                                     if st.button("Emitir Infracción", key=f"ticket_{person['id_number']}_{idx}"):
                                         if reason:
-                                            ticket_response = st.session_state['session'].post('http://localhost:5000/guard/issue_ticket', json={'person_id': person['id'], 'reason': reason})
+                                            ticket_response = st.session_state['session'].post('http://localhost:5001/guard/issue_ticket', json={'person_id': person['id'], 'reason': reason})
                                             if ticket_response.ok:
                                                 st.success("Infracción emitida")
                                             else:
@@ -76,7 +76,7 @@ def guard_dashboard():
                                             st.warning("Por favor, ingrese la razón de la infracción.")
                                 with col2:
                                     if st.button("Denegar Acceso", key=f"deny_{person['id_number']}_{idx}"):
-                                        deny_response = st.session_state['session'].post('http://localhost:5000/guard/deny_access', json={'person_id': person['id']})
+                                        deny_response = st.session_state['session'].post('http://localhost:5001/guard/deny_access', json={'person_id': person['id']})
                                         if deny_response.ok:
                                             st.success("Acceso denegado")
                                         else:
@@ -86,7 +86,7 @@ def guard_dashboard():
                                 st.warning(f"Placa no reconocida: {item['plate']}")
                                 id_number = st.text_input("Ingrese el Número de ID para asociar la placa", key=f"id_input_{unique_key}")
                                 if st.button("Asignar Placa", key=f"assign_button_{unique_key}"):
-                                    assign_response = st.session_state['session'].post('http://localhost:5000/guard/assign_plate', json={'id_number': id_number, 'plate': item['plate']})
+                                    assign_response = st.session_state['session'].post('http://localhost:5001/guard/assign_plate', json={'id_number': id_number, 'plate': item['plate']})
                                     if assign_response.ok:
                                         st.success("Placa asignada")
                                     else:
@@ -107,14 +107,14 @@ def admin_dashboard():
     st.title("🚦 Panel de Administración")
     st.write(f"👤 Sesión iniciada como **{st.session_state['username']}**")
     if st.button("🔒 Cerrar Sesión"):
-        st.session_state['session'].get('http://localhost:5000/logout')
+        st.session_state['session'].get('http://localhost:5001/logout')
         st.session_state.clear()
         st.experimental_rerun()
 
     st.markdown("---")
     st.header("📋 Gestionar Guardias")
     session = st.session_state['session']
-    response = session.get('http://localhost:5000/api/admin/guards')
+    response = session.get('http://localhost:5001/api/admin/guards')
     if response.ok:
         guards = response.json().get('guards', [])
         for guard in guards:
@@ -124,7 +124,7 @@ def admin_dashboard():
                 with col1:
                     if st.button("Eliminar", key=f"delete_{guard['id']}"):
                         delete_response = session.post(
-                            'http://localhost:5000/admin/guards',
+                            'http://localhost:5001/admin/guards',
                             json={'action': 'remove', 'guard_id': guard['id']}
                         )
                         if delete_response.ok:
@@ -136,7 +136,7 @@ def admin_dashboard():
                     new_gate = st.text_input("Nueva Puerta Asignada", key=f"gate_{guard['id']}")
                     if st.button("Actualizar Puerta", key=f"update_{guard['id']}"):
                         update_response = session.post(
-                            'http://localhost:5000/admin/guards',
+                            'http://localhost:5001/admin/guards',
                             json={'action': 'update', 'guard_id': guard['id'], 'gate_assigned': new_gate}
                         )
                         if update_response.ok:
@@ -157,7 +157,7 @@ def admin_dashboard():
         submitted = st.form_submit_button("Agregar Guardia")
         if submitted:
             add_response = session.post(
-                'http://localhost:5000/admin/guards',
+                'http://localhost:5001/admin/guards',
                 json={
                     'action': 'add',
                     'name': name,
@@ -175,7 +175,7 @@ def admin_dashboard():
     st.markdown("---")
     st.header("🚗 Registros de Acceso")
     # Obtener registros de acceso
-    access_logs_response = session.get('http://localhost:5000/api/admin/access_logs')
+    access_logs_response = session.get('http://localhost:5001/api/admin/access_logs')
     if access_logs_response.ok:
         access_logs = access_logs_response.json().get('access_logs', [])
         if access_logs:
@@ -194,7 +194,7 @@ def admin_dashboard():
     st.markdown("---")
     st.header("🛡️ Logs de Guardias")
     # Obtener logs de guardias
-    guard_logs_response = session.get('http://localhost:5000/api/admin/guard_logs')
+    guard_logs_response = session.get('http://localhost:5001/api/admin/guard_logs')
     if guard_logs_response.ok:
         guard_logs = guard_logs_response.json().get('guard_logs', [])
         if guard_logs:
